@@ -122,6 +122,31 @@ struct SymbolTable {
         if (it->size > 0 && offset >= it->value + it->size) return nullptr;
         return &*it;
     }
+
+    // Return [begin, end) iterators for all STT_FUNC symbols in section shndx,
+    // in descending order of value (highest offset first).
+    // Runs two binary searches — O(log n) total.
+    std::pair<std::vector<Sym>::const_iterator,
+              std::vector<Sym>::const_iterator>
+    section_range(int shndx) const {
+        // In our descending ordering, section shndx starts where shndx+1 ends.
+        // lower_bound with (shndx, MAX_VALUE) finds the first element of shndx.
+        Sym lo_key; lo_key.shndx = shndx; lo_key.value = UINT64_MAX;
+        Sym hi_key; hi_key.shndx = shndx; hi_key.value = 0;
+        // First element of this section (highest value): lower_bound of lo_key
+        auto begin = std::lower_bound(syms.begin(), syms.end(), lo_key);
+        // First element past this section (shndx-1): lower_bound of hi_key
+        // but we want strictly past, so use the element after the last value==0
+        // Simpler: upper_bound with (shndx, 0) using our comparator
+        // Since operator< is descending, upper_bound finds first element < key,
+        // i.e. first element with value < 0 (impossible) or shndx < shndx (next section).
+        // Instead just scan: end = lower_bound(syms.begin(), syms.end(), hi_key)
+        // then step past any at value==0 with same shndx.
+        // Cleanest: search for first element where shndx < our shndx in descending order.
+        Sym end_key; end_key.shndx = shndx - 1; end_key.value = UINT64_MAX;
+        auto end = std::lower_bound(syms.begin(), syms.end(), end_key);
+        return {begin, end};
+    }
 };
 
 // ---------------------------------------------------------------------------
