@@ -35,11 +35,13 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include <elf.h>
 #include <cxxabi.h>
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -115,14 +117,12 @@ struct DemangleCache {
 // ---------------------------------------------------------------------------
 // Batch addr2line lookup
 //
-// For each section we need DWARF info from, we:
-//   1. Collect all unique offsets during the relocation scan (pass 1)
-//   2. Run addr2line once with ALL offsets fed via stdin redirection (pass 2)
-//   3. Parse the output into a map: offset -> {file, line}
+// Forks addr2line, writes all offsets to its stdin, closes it to signal EOF,
+// then reads all output. No temp files, no select(), no interactive protocol.
 //
-// addr2line reads queries until EOF and emits exactly one response per query
-// (2 lines: function name + file:line). Batching like this avoids all the
-// interactive pipe complexity: no select(), no fd leaks, no setvbuf tricks.
+// addr2line emits exactly 2 lines per query (-f guarantees this):
+//   line 1: enclosing function name (discarded)
+//   line 2: filepath:line  (or ??:0 if unknown)
 // ---------------------------------------------------------------------------
 
 struct Location {
@@ -130,69 +130,86 @@ struct Location {
     int         line = 0;
 };
 
+// Key: (section_index, offset_within_section)
+using LocationMap = std::map<std::pair<int,uint64_t>, Location>;
+
 static void batch_addr2line(
         const char* obj_path,
-        const std::string& section_name,   // empty string = primary .text
+        const std::string& section_name,   // empty = primary .text, else e.g. ".text._ZN..."
+        int section_idx,
         const std::vector<uint64_t>& offsets,
-        std::unordered_map<uint64_t, Location>& results)
+        LocationMap& results)
 {
     if (offsets.empty()) return;
 
-    // Write all offsets to a temp file, then feed it to addr2line via stdin
-    // redirection. This is POSIX-safe and avoids the need for a bidirectional
-    // pipe (popen only gives us one direction).
-    char tmppath[] = "/tmp/calltrace_XXXXXX";
-    int tmpfd = mkstemp(tmppath);
-    if (tmpfd < 0) return;
+    // Two pipes: parent writes queries to addr2line's stdin,
+    //            parent reads results from addr2line's stdout.
+    int pipe_in[2], pipe_out[2];
+    if (pipe(pipe_in)  != 0) return;
+    if (pipe(pipe_out) != 0) { close(pipe_in[0]); close(pipe_in[1]); return; }
 
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipe_in[0]);  close(pipe_in[1]);
+        close(pipe_out[0]); close(pipe_out[1]);
+        return;
+    }
+
+    if (pid == 0) {
+        dup2(pipe_in[0],  STDIN_FILENO);
+        dup2(pipe_out[1], STDOUT_FILENO);
+        close(pipe_in[0]);  close(pipe_in[1]);
+        close(pipe_out[0]); close(pipe_out[1]);
+        // Redirect stderr to /dev/null to suppress addr2line warnings
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) dup2(devnull, STDERR_FILENO);
+        if (!section_name.empty())
+            execlp("addr2line", "addr2line",
+                   "-e", obj_path, "-j", section_name.c_str(), "-f", "-C", nullptr);
+        else
+            execlp("addr2line", "addr2line",
+                   "-e", obj_path, "-f", "-C", nullptr);
+        _exit(1);
+    }
+
+    // Parent: close the ends we don't use
+    close(pipe_in[0]);
+    close(pipe_out[1]);
+
+    // Write all queries then close stdin so addr2line gets EOF and flushes output
     for (uint64_t off : offsets) {
         char buf[32];
         int n = snprintf(buf, sizeof buf, "0x%lx\n", (unsigned long)off);
-        if (write(tmpfd, buf, n) < 0) { close(tmpfd); unlink(tmppath); return; }
+        if (write(pipe_in[1], buf, n) != n) break; // short write: pipe full or closed
     }
-    close(tmpfd);
+    close(pipe_in[1]);
 
-    // Build the popen command.
-    // -f: emit enclosing function name — we discard it, but it locks the
-    //     protocol to exactly 2 lines per query, making parsing unambiguous.
-    // -C: demangle (pairs with -f; not actually needed since we discard the
-    //     function line, but keeps the output readable if debugging manually).
-    char cmd[4096];
-    if (!section_name.empty())
-        snprintf(cmd, sizeof cmd,
-            "addr2line -e '%s' -j '%s' -f -C < '%s' 2>/dev/null",
-            obj_path, section_name.c_str(), tmppath);
-    else
-        snprintf(cmd, sizeof cmd,
-            "addr2line -e '%s' -f -C < '%s' 2>/dev/null",
-            obj_path, tmppath);
+    // Read all output
+    FILE* fp = fdopen(pipe_out[0], "r");
+    if (!fp) { waitpid(pid, nullptr, 0); return; }
 
-    FILE* fp = popen(cmd, "r");
-    if (!fp) { unlink(tmppath); return; }
-
-    // Read exactly 2 lines per query: function name (discarded) + file:line.
     char func_buf[4096];
     char loc_buf[4096];
     for (uint64_t off : offsets) {
-        if (!fgets(func_buf, sizeof func_buf, fp)) break;
-        if (!fgets(loc_buf,  sizeof loc_buf,  fp)) break;
+        if (!fgets(func_buf, sizeof func_buf, fp)) break; // function name (discard)
+        if (!fgets(loc_buf,  sizeof loc_buf,  fp)) break; // file:line
 
         loc_buf[strcspn(loc_buf, "\n")] = 0;
 
-        // Strip optional " (discriminator N)" suffix that some DWARF versions emit
+        // Strip optional " (discriminator N)" suffix
         char* space = strchr(loc_buf, ' ');
         if (space) *space = 0;
 
-        // Parse "filepath:line"; skip "??:0" (unknown location)
+        // Parse "filepath:line"; skip "??:0" (unknown)
         char* colon = strrchr(loc_buf, ':');
         if (colon && loc_buf[0] != '?') {
             *colon = 0;
-            results[off] = { loc_buf, atoi(colon + 1) };
+            results[{section_idx, off}] = { loc_buf, atoi(colon + 1) };
         }
     }
 
-    pclose(fp);
-    unlink(tmppath);
+    fclose(fp);
+    waitpid(pid, nullptr, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +344,7 @@ struct Edge {
 };
 
 // ---------------------------------------------------------------------------
-// Core processing — three passes
+// Core processing — two passes
 // ---------------------------------------------------------------------------
 static void process(const Options& opt) {
     int fd = ::open(opt.obj_path, O_RDONLY);
@@ -440,15 +457,9 @@ static void process(const Options& opt) {
         }
 
         // -----------------------------------------------------------------
-        // Pass 2: batch addr2line queries, one invocation per section
+        // Pass 2: batch addr2line queries, then emit TSV rows
         // -----------------------------------------------------------------
-
-        // Packed key: section index (high 16 bits) | offset (low 48 bits)
-        auto loc_key = [](int shidx, uint64_t off) -> uint64_t {
-            return ((uint64_t)(uint16_t)shidx << 48) | (off & 0xffffffffffffULL);
-        };
-
-        std::unordered_map<uint64_t, Location> locations;
+        LocationMap locations;
 
         for (auto& [shidx, offsets] : dwarf_queries) {
             std::string sname(obj.section_name(shidx));
@@ -461,16 +472,9 @@ static void process(const Options& opt) {
             // Primary .text needs no -j flag; split sections do
             std::string jflag = (sname == ".text") ? "" : sname;
 
-            std::unordered_map<uint64_t, Location> section_locs;
-            batch_addr2line(opt.obj_path, jflag, offsets, section_locs);
-
-            for (auto& [off, loc] : section_locs)
-                locations[loc_key(shidx, off)] = std::move(loc);
+            batch_addr2line(opt.obj_path, jflag, shidx, offsets, locations);
         }
 
-        // -----------------------------------------------------------------
-        // Pass 3: emit TSV rows
-        // -----------------------------------------------------------------
         DemangleCache dcache;
 
         for (const Edge& e : edges) {
@@ -478,7 +482,7 @@ static void process(const Options& opt) {
             int         src_line = 0;
 
             if (!opt.no_dwarf) {
-                auto it = locations.find(loc_key(e.section_idx, e.call_offset));
+                auto it = locations.find({e.section_idx, e.call_offset});
                 if (it != locations.end() && !it->second.file.empty()) {
                     src_file = it->second.file;
                     src_line = it->second.line;
