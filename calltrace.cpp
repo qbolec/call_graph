@@ -219,6 +219,11 @@ struct ObjFile {
 
 // ---------------------------------------------------------------------------
 // Symbol table: (section_index, byte_offset) -> enclosing function
+//
+// Only STT_FUNC symbols are stored, sorted in descending order of (shndx, value).
+// This lets lower_bound find the enclosing function in one step: it returns the
+// first element whose (shndx, value) is <= (query_shndx, query_offset), which
+// is exactly the function that starts at or before the given offset.
 // ---------------------------------------------------------------------------
 struct SymbolTable {
     struct Sym {
@@ -226,15 +231,11 @@ struct SymbolTable {
         uint64_t    size;
         std::string name;   // mangled
         int         shndx;
-        bool        is_func;
 
-        // STT_FUNC symbols sort before non-func symbols at the same (shndx, value).
-        // This ensures lower_bound finds the func symbol even when a STT_SECTION
-        // symbol for the same section sits at the same offset in the sorted array.
+        // Descending order: higher (shndx, value) sorts first
         bool operator<(const Sym& o) const {
-            if (shndx   != o.shndx)   return shndx   < o.shndx;
-            if (value   != o.value)   return value   < o.value;
-            return is_func > o.is_func; // func=true(1) > non-func=false(0), so func sorts first
+            if (shndx != o.shndx) return shndx > o.shndx;
+            return value > o.value;
         }
     };
     std::vector<Sym> syms;
@@ -249,44 +250,27 @@ struct SymbolTable {
             size_t n = sh->sh_size / sizeof(Elf64_Sym);
             for (size_t j = 0; j < n; j++) {
                 const Elf64_Sym& s = sym_base[j];
-                syms.push_back({ s.st_value, s.st_size, strtab + s.st_name,
-                                  (int)s.st_shndx,
-                                  ELF64_ST_TYPE(s.st_info) == STT_FUNC });
+                if (ELF64_ST_TYPE(s.st_info) != STT_FUNC) continue;
+                syms.push_back({ s.st_value, s.st_size,
+                                  strtab + s.st_name, (int)s.st_shndx });
             }
         }
         std::sort(syms.begin(), syms.end());
     }
 
     // Find the STT_FUNC symbol that contains (shndx, offset).
-    //
-    // We use lower_bound with a synthetic non-func key at (shndx, offset).
-    // Because func symbols sort before non-func at the same (shndx, value),
-    // lower_bound lands just after any func at this exact offset, so we step
-    // back one position to find it. If the offset is strictly inside a function
-    // (not at its start), lower_bound lands somewhere after the func's start,
-    // and we walk back to find it.
     const Sym* containing_function(int shndx, uint64_t offset) const {
-        // Synthetic upper-bound key: non-func at (shndx, offset+1) so that
-        // lower_bound gives us the first symbol strictly greater than any func
-        // at (shndx, offset).
         Sym key;
-        key.shndx   = shndx;
-        key.value   = offset + 1;
-        key.is_func = true;  // doesn't matter since value is offset+1
+        key.shndx = shndx;
+        key.value = offset;
 
+        // In descending order, lower_bound finds the first element <= key,
+        // i.e. the function with the largest value still <= offset.
         auto it = std::lower_bound(syms.begin(), syms.end(), key);
-
-        // Walk back to find the nearest func in the same section
-        while (it != syms.begin()) {
-            --it;
-            if (it->shndx != shndx) return nullptr; // left the section entirely
-            if (it->is_func) {
-                if (it->size > 0 && offset >= it->value + it->size) return nullptr;
-                return &*it;
-            }
-            // Non-func symbol at same offset — keep walking back
-        }
-        return nullptr;
+        if (it == syms.end()) return nullptr;
+        if (it->shndx != shndx) return nullptr;
+        if (it->size > 0 && offset >= it->value + it->size) return nullptr;
+        return &*it;
     }
 };
 
