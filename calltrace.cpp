@@ -44,6 +44,7 @@
 
 #include <algorithm>
 #include <map>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -57,9 +58,11 @@ struct Options {
     bool        no_inter      = false;
     bool        no_stl        = false;
     bool        no_dwarf      = false;
-    const char* obj_path      = nullptr;
-    const char* callee_filter = nullptr;
-    const char* caller_filter = nullptr;
+    const char* obj_path        = nullptr;
+    const char* callee_exact    = nullptr;  // --callee: literal string equality
+    const char* callee_filter   = nullptr;  // --callee-filter: regex search
+    const char* caller_exact    = nullptr;  // --caller: literal string equality
+    const char* caller_filter   = nullptr;  // --caller-filter: regex search
 };
 
 static void usage(const char* argv0) {
@@ -73,8 +76,10 @@ static void usage(const char* argv0) {
         "  --no-inter      suppress inter-TU calls (external symbols)\n"
         "  --no-stl        suppress rows where caller source is a system header (/usr, /opt)\n"
         "  --no-dwarf      skip addr2line; emit '-' for file/line (faster)\n"
-        "  --callee <sub>  only emit rows where mangled callee contains <sub>\n"
-        "  --caller <sub>  only emit rows where mangled caller contains <sub>\n",
+        "  --callee <str>         only emit rows where mangled callee == <str> (exact)\n"
+        "  --callee-filter <re>   only emit rows where mangled callee matches regex\n"
+        "  --caller <str>         only emit rows where mangled caller == <str> (exact)\n"
+        "  --caller-filter <re>   only emit rows where mangled caller matches regex\n",
         argv0);
 }
 
@@ -89,10 +94,18 @@ static Options parse_args(int argc, char** argv) {
         else if (a == "--no-dwarf") o.no_dwarf  = true;
         else if (a == "--callee") {
             if (++i >= argc) { fprintf(stderr, "--callee requires an argument\n"); exit(1); }
+            o.callee_exact = argv[i];
+        }
+        else if (a == "--callee-filter") {
+            if (++i >= argc) { fprintf(stderr, "--callee-filter requires an argument\n"); exit(1); }
             o.callee_filter = argv[i];
         }
         else if (a == "--caller") {
             if (++i >= argc) { fprintf(stderr, "--caller requires an argument\n"); exit(1); }
+            o.caller_exact = argv[i];
+        }
+        else if (a == "--caller-filter") {
+            if (++i >= argc) { fprintf(stderr, "--caller-filter requires an argument\n"); exit(1); }
             o.caller_filter = argv[i];
         }
         else if (a.substr(0, 2) == "--") {
@@ -103,6 +116,22 @@ static Options parse_args(int argc, char** argv) {
     if (i >= argc) { usage(argv[0]); exit(1); }
     o.obj_path = argv[i];
     return o;
+}
+
+
+// ---------------------------------------------------------------------------
+// Matching helpers — exact string equality or regex search
+// ---------------------------------------------------------------------------
+static bool matches_exact(const char* exact, const std::string& name) {
+    return exact == nullptr || name == exact;
+}
+static bool matches_filter(const char* pattern, const std::string& name) {
+    return pattern == nullptr || std::regex_search(name, std::regex(pattern));
+}
+static bool matches_any(const Options& opt,
+                         const char* exact, const char* filter,
+                         const std::string& name) {
+    return matches_exact(exact, name) && matches_filter(filter, name);
 }
 
 // ---------------------------------------------------------------------------
@@ -447,8 +476,7 @@ static void process(const Options& opt) {
                 }
 
                 if (callee_mangled.empty()) continue;
-                if (opt.callee_filter &&
-                    callee_mangled.find(opt.callee_filter) == std::string::npos)
+                if (!matches_any(opt, opt.callee_exact, opt.callee_filter, callee_mangled))
                     continue;
 
                 uint64_t call_offset = r.r_offset;
@@ -457,8 +485,7 @@ static void process(const Options& opt) {
                     symtab.containing_function(target_shidx, call_offset);
                 if (!caller_sym) continue;
 
-                if (opt.caller_filter &&
-                    caller_sym->name.find(opt.caller_filter) == std::string::npos)
+                if (!matches_any(opt, opt.caller_exact, opt.caller_filter, caller_sym->name))
                     continue;
 
                 edges.push_back({ caller_sym->name, callee_mangled,

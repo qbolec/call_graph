@@ -30,6 +30,7 @@
 
 #include <elf.h>
 #include <cxxabi.h>
+#include <regex>
 
 #include <algorithm>
 #include <string>
@@ -158,20 +159,30 @@ static void batch_addr2line(
 // Main
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
-    bool        no_dwarf = false;
-    const char* obj_path = nullptr;
-    const char* filter   = nullptr;
+    bool        no_dwarf      = false;
+    const char* obj_path      = nullptr;
+    const char* exact_filter  = nullptr;   // --filter: exact match
+    const char* regex_filter  = nullptr;   // --filter-re: regex match
 
     for (int i = 1; i < argc; i++) {
         std::string_view a = argv[i];
         if (a == "--no-dwarf") no_dwarf = true;
+        else if (a == "--filter") {
+            if (++i >= argc) { fprintf(stderr, "--filter requires an argument\n"); return 1; }
+            exact_filter = argv[i];
+        }
+        else if (a == "--filter-re") {
+            if (++i >= argc) { fprintf(stderr, "--filter-re requires an argument\n"); return 1; }
+            regex_filter = argv[i];
+        }
         else if (a == "--help" || a == "-h") {
             fprintf(stderr,
-                "Usage: %s [--no-dwarf] <file.o> [filter]\n"
+                "Usage: %s [--no-dwarf] [--filter <str>] [--filter-re <re>] <file.o>\n"
                 "\n"
                 "Output (TSV):  mangled_name \\t source_path \\t source_line \\t demangled_name\n"
                 "\n"
-                "filter  substring matched against the mangled name\n",
+                "  --filter <str>    only show functions where mangled name == <str> (exact)\n"
+                "  --filter-re <re>  only show functions where mangled name matches regex\n",
                 argv[0]);
             return 0;
         }
@@ -179,11 +190,10 @@ int main(int argc, char** argv) {
             fprintf(stderr, "unknown option: %s\n", argv[i]); return 1;
         }
         else if (!obj_path) obj_path = argv[i];
-        else                filter   = argv[i];
     }
 
     if (!obj_path) {
-        fprintf(stderr, "Usage: %s [--no-dwarf] <file.o> [filter]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--no-dwarf] [--filter <str>] [--filter-re <re>] <file.o>\n", argv[0]);
         return 1;
     }
 
@@ -229,7 +239,13 @@ int main(int argc, char** argv) {
             if (s.st_shndx == SHN_UNDEF) continue; // declaration, not definition
             std::string name = strtab + s.st_name;
             if (name.empty()) continue;
-            if (filter && name.find(filter) == std::string::npos) continue;
+            if (exact_filter && name != exact_filter) continue;
+            if (regex_filter) {
+                std::regex re(regex_filter);
+                // match against mangled OR demangled — useful for human-readable searches
+                if (!std::regex_search(name, re) &&
+                    !std::regex_search(demangle(name), re)) continue;
+            }
             funcs.push_back({ std::move(name), (int)s.st_shndx, s.st_value });
         }
     }
