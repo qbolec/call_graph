@@ -40,6 +40,7 @@ g++ -std=c++17 -O2 -o functions  functions.cpp
 
 The only dependency is `addr2line` from GNU binutils, which is standard on any
 Linux development machine.
+Running the tools with `--no-dwarf` option, doesn't require `addr2line`, though.
 
 ---
 
@@ -68,8 +69,8 @@ cmake -DCMAKE_CXX_FLAGS="-g -ffunction-sections" \
 
 By default the compiler puts all functions from a translation unit into a single
 `.text` section. Calls between functions in the *same* section have no
-relocation entry — they are resolved at compile time and invisible to
-`callgraph`.
+relocation entry — they are resolved at compile time and `callgraph` will have to
+use less reliable way to find the calls (see below).
 
 With `-ffunction-sections` each function gets its own section
 (`.text.FunctionName`), and all intra-file calls become visible as relocations.
@@ -81,11 +82,13 @@ it is commonly used in release builds anyway.
 
 `callgraph` still works without these flags:
 
-- **Without `-ffunction-sections`**: calls between functions in the *same*
-  `.o` file are missed. Cross-file calls (the majority in large projects) are
-  fully captured. `callgraph` falls back to scanning for `e8` (x86-64 direct
-  call) opcodes for sections containing multiple functions, which recovers most
-  intra-file calls as a best-effort heuristic.
+- **Without `-ffunction-sections`**: cross-file calls (the majority in large 
+  projects) are fully captured as usual, but for calls within same compilation unit,
+  `callgraph` has to get clever: it falls back to scanning for `e8` (x86-64 direct
+  `call`) opcodes for sections containing multiple functions, which recovers most
+  intra-file calls as a best-effort heuristic. In can produce false-positives, if
+  by chance the binary contained a sequence of `e8` followed by four bytes which
+  happen to be exact relative address of another function.
 - **Without `-g`**: call edges are found but source paths and line numbers show
   as `-` and `0`. Use `--no-dwarf` to skip the `addr2line` lookup entirely and
   run much faster.
@@ -111,18 +114,15 @@ Options:
 **Example: find the mangled name of `lock_rec_lock`**
 
 ```bash
-$ ./functions storage/innobase/lock/lock0lock.cc.o \
+$ ./functions mysql-bin/storage/innobase/CMakeFiles/innobase.dir/lock/lock0lock.cc.o \
       --function-filter "lock_rec_lock"
-
-_ZL13lock_rec_lockb11select_modemPK11buf_block_tmP12dict_index_tP9que_thr_t \
-    /path/to/storage/innobase/lock/lock0lock.cc  4521 \
-    lock_rec_lock(bool, select_mode, unsigned long, ...)
+_ZL13lock_rec_lockb11select_modemPK11buf_block_tmP12dict_index_tP9que_thr_t mysql-server/storage/innobase/lock/lock0lock.cc  1866  lock_rec_lock(bool, select_mode, unsigned long, buf_block_t const*, unsigned long, dict_index_t*, que_thr_t*)
 ```
 
 **Example: find by source file and line number**
 
 ```bash
-$ ./functions sql/handler.cc.o | grep "handler.cc:4521"
+$ ./functions sql/handler.cc.o | grep -P "handler.cc\t4521"
 ```
 
 **Example: list all non-STL functions in a `.o` file**
@@ -169,10 +169,12 @@ _ZL32lock_clust_rec_modify_check...  lock_clust_rec_modify_check_and_lock(...)  
 $ ./callgraph --no-stl --callee-filter "lock_rec_lock" lock0lock.cc.o
 ```
 
-Note: `--callee-filter` matches against both the mangled and demangled name, so
-you can use plain English substrings. `--callee` requires an exact match against
-the mangled name — use it when you want to exclude `.cold` compiler splits or
-other variants that share a demangled name.
+Note: `--callee-filter` is a regexp which matches against both the mangled name, 
+which typically contains the function name as a substring, so using "lock_rec_lock"
+here achieves the goal. `--callee` requires an exact match against
+the mangled name — use it when you know the mangled name, and want exclude accidental
+matches such as `.cold` compiler splits or other variants that share a demangled name
+prefix.
 
 **Example: combine caller and callee filters**
 
@@ -246,8 +248,8 @@ for a first exploratory pass; rebuild with DWARF when you need source locations.
 find_mangled_name.sh [--suffix=<path_suffix>] <build_dir> <pattern>
 ```
 
-`pattern` is a regex matched against both mangled and demangled names. Use
-`--suffix` to restrict results to a specific source file.
+`pattern` is a regex matched against the mangled name.
+Use `--suffix` to restrict results to a specific source file.
 
 ```bash
 # Find all functions with "lock_rec_lock" in the name
@@ -277,7 +279,7 @@ callers, and so on, displaying the result as an indented tree in depth-first
 order.
 
 ```bash
-$ ./callers_tree.sh --db=mysql.db \
+$ ./callers_tree.sh --db=mysql.db --depth=6 \
       _ZL13lock_rec_lockb11select_modemPK11buf_block_tmP12dict_index_tP9que_thr_t
 
 lock_sec_rec_modify_check_and_lock(...)
@@ -291,7 +293,7 @@ lock_clust_rec_modify_check_and_lock(...)
     ...
 ```
 
-**`--depth` warning**: the default depth limit is 20. Increasing it beyond that
+**`--depth` warning**: the default depth limit is 10. Increasing it beyond that
 risks an exponential blowup for functions that are called from many places —
 the query time can grow into minutes or hours. The cycle guard (`path NOT LIKE`)
 prevents infinite loops but not combinatorial explosion. For deep exploration,

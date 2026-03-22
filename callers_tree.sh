@@ -2,7 +2,7 @@
 # callers_tree.sh — show the full caller tree of a function as an indented tree.
 #
 # Usage:
-#   callers_tree.sh [--db=call_graph.db] [--depth=20] <mangled_name>
+#   callers_tree.sh [--db=call_graph.db] [--depth=10] <mangled_name>
 #
 # Output: indented tree with demangled names, depth-first order.
 #
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 DB="call_graph.db"
-MAX_DEPTH=20
+MAX_DEPTH=10
 TARGET=""
 
 for arg in "$@"; do
@@ -29,7 +29,7 @@ for arg in "$@"; do
 done
 
 if [[ -z "$TARGET" ]]; then
-    echo "Usage: $0 [--db=call_graph.db] [--depth=20] <mangled_name>" >&2
+    echo "Usage: $0 [--db=call_graph.db] [--depth=10] <mangled_name>" >&2
     exit 1
 fi
 
