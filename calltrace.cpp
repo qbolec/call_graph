@@ -9,18 +9,20 @@
 //   g++ -std=c++17 -O2 -o calltrace calltrace.cpp
 //
 // Usage:
-//   calltrace [options] <file.o> [callee_filter]
+//   calltrace [options] <file.o>
 //
 // Options:
-//   --no-intra    suppress calls within this TU (static/inlined fns; only visible
-//                 when compiled with -ffunction-sections)
-//   --no-inter    suppress calls to external symbols (cross-TU)
-//   --no-stl      suppress rows where the caller's source is a system header
-//                 (path starts with /usr or /opt)
-//   --no-dwarf    skip addr2line entirely; emit '-' for file/line (faster)
+//   --no-intra      suppress calls within this TU (static/inlined fns; only visible
+//                   when compiled with -ffunction-sections)
+//   --no-inter      suppress calls to external symbols (cross-TU)
+//   --no-stl        suppress rows where the caller's source is a system header
+//                   (path starts with /usr or /opt)
+//   --no-dwarf      skip addr2line entirely; emit '-' for file/line (faster)
+//   --callee <sub>  only emit rows where mangled callee contains <sub>
+//   --caller <sub>  only emit rows where mangled caller contains <sub>
 //
 // Output (TSV to stdout):
-//   caller_demangled \t source_path \t source_line \t callee_demangled
+//   mangled_caller \t demangled_caller \t source_path \t source_line \t demangled_callee \t mangled_callee
 //
 // Notes:
 //   - Only statically-resolvable direct calls (via relocations) are captured.
@@ -57,22 +59,22 @@ struct Options {
     bool        no_dwarf      = false;
     const char* obj_path      = nullptr;
     const char* callee_filter = nullptr;
+    const char* caller_filter = nullptr;
 };
 
 static void usage(const char* argv0) {
     fprintf(stderr,
-        "Usage: %s [options] <file.o> [callee_filter]\n"
+        "Usage: %s [options] <file.o>\n"
         "\n"
-        "Output (TSV):  caller \\t source_path \\t line \\t callee\n"
+        "Output (TSV):  mangled_caller \\t demangled_caller \\t source_path \\t source_line \\t demangled_callee \\t mangled_callee\n"
         "\n"
         "Options:\n"
-        "  --no-intra   suppress intra-TU calls (needs -ffunction-sections to be visible)\n"
-        "  --no-inter   suppress inter-TU calls (external symbols)\n"
-        "  --no-stl     suppress rows where caller source is a system header (/usr, /opt)\n"
-        "  --no-dwarf   skip addr2line; emit '-' for file/line (faster)\n"
-        "\n"
-        "callee_filter  substring matched against the raw mangled callee name\n"
-        "               e.g. 'write_row' or '_ZN2DB'\n",
+        "  --no-intra      suppress intra-TU calls (needs -ffunction-sections to be visible)\n"
+        "  --no-inter      suppress inter-TU calls (external symbols)\n"
+        "  --no-stl        suppress rows where caller source is a system header (/usr, /opt)\n"
+        "  --no-dwarf      skip addr2line; emit '-' for file/line (faster)\n"
+        "  --callee <sub>  only emit rows where mangled callee contains <sub>\n"
+        "  --caller <sub>  only emit rows where mangled caller contains <sub>\n",
         argv0);
 }
 
@@ -85,14 +87,21 @@ static Options parse_args(int argc, char** argv) {
         else if (a == "--no-inter") o.no_inter  = true;
         else if (a == "--no-stl")   o.no_stl    = true;
         else if (a == "--no-dwarf") o.no_dwarf  = true;
+        else if (a == "--callee") {
+            if (++i >= argc) { fprintf(stderr, "--callee requires an argument\n"); exit(1); }
+            o.callee_filter = argv[i];
+        }
+        else if (a == "--caller") {
+            if (++i >= argc) { fprintf(stderr, "--caller requires an argument\n"); exit(1); }
+            o.caller_filter = argv[i];
+        }
         else if (a.substr(0, 2) == "--") {
             fprintf(stderr, "unknown option: %s\n", argv[i]); exit(1);
         }
         else break;
     }
     if (i >= argc) { usage(argv[0]); exit(1); }
-    o.obj_path      = argv[i++];
-    if (i < argc) o.callee_filter = argv[i];
+    o.obj_path = argv[i];
     return o;
 }
 
@@ -448,6 +457,10 @@ static void process(const Options& opt) {
                     symtab.containing_function(target_shidx, call_offset);
                 if (!caller_sym) continue;
 
+                if (opt.caller_filter &&
+                    caller_sym->name.find(opt.caller_filter) == std::string::npos)
+                    continue;
+
                 edges.push_back({ caller_sym->name, callee_mangled,
                                    target_shidx, call_offset });
 
@@ -491,11 +504,13 @@ static void process(const Options& opt) {
 
             if (opt.no_stl && is_system_path(src_file)) continue;
 
-            printf("%s\t%s\t%d\t%s\n",
+            printf("%s\t%s\t%s\t%d\t%s\t%s\n",
+                   e.caller_mangled.c_str(),
                    dcache.get(e.caller_mangled).c_str(),
                    src_file.c_str(),
                    src_line,
-                   dcache.get(e.callee_mangled).c_str());
+                   dcache.get(e.callee_mangled).c_str(),
+                   e.callee_mangled.c_str());
         }
     }
 
