@@ -10,9 +10,9 @@
 //   --no-stl             suppress rows where caller source is a system header
 //   --no-dwarf           skip addr2line; emit '-' for file/line (faster)
 //   --callee <str>       only emit rows where mangled callee == <str> (exact)
-//   --callee-filter <re> only emit rows where callee matches regex (mangled or demangled)
+//   --callee-filter <re> only emit rows where mangled callee matches regex
 //   --caller <str>       only emit rows where mangled caller == <str> (exact)
-//   --caller-filter <re> only emit rows where caller matches regex (mangled or demangled)
+//   --caller-filter <re> only emit rows where mangled caller matches regex
 //
 // Output (TSV):
 //   mangled_caller \t demangled_caller \t source_path \t source_line \t demangled_callee \t mangled_callee
@@ -52,9 +52,9 @@ static void usage(const char* argv0) {
         "  --no-stl             suppress rows where caller source is a system header\n"
         "  --no-dwarf           skip addr2line; emit '-' for file/line (faster)\n"
         "  --callee <str>       only rows where mangled callee == <str> (exact)\n"
-        "  --callee-filter <re> only rows where callee matches regex (mangled or demangled)\n"
+        "  --callee-filter <re> only rows where mangled callee matches regex\n"
         "  --caller <str>       only rows where mangled caller == <str> (exact)\n"
-        "  --caller-filter <re> only rows where caller matches regex (mangled or demangled)\n",
+        "  --caller-filter <re> only rows where mangled caller matches regex\n",
         argv0);
 }
 

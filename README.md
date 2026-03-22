@@ -35,7 +35,7 @@ Or without CMake:
 
 ```bash
 g++ -std=c++17 -O2 -o callgraph callgraph.cpp
-g++ -std=c++17 -O2 -o functions  functions.cpp
+g++ -std=c++17 -O2 -o functions functions.cpp
 ```
 
 The only dependency is `addr2line` from GNU binutils, which is standard on any
@@ -108,7 +108,7 @@ Options:
   --no-dwarf             skip addr2line; emit '-' for file/line (faster)
   --no-stl               suppress functions from system headers (/usr, /opt)
   --function <str>       only show functions where mangled name == <str> (exact)
-  --function-filter <re> only show functions matching regex (mangled or demangled)
+  --function-filter <re> only show functions where mangled name matches regex
 ```
 
 **Example: find the mangled name of `lock_rec_lock`**
@@ -147,9 +147,9 @@ Options:
   --no-stl             suppress rows where caller source is a system header (/usr, /opt)
   --no-dwarf           skip addr2line; emit '-' for file/line (faster)
   --callee <str>       only rows where mangled callee == <str> (exact)
-  --callee-filter <re> only rows where callee matches regex (mangled or demangled)
+  --callee-filter <re> only rows where mangled callee matches regex
   --caller <str>       only rows where mangled caller == <str> (exact)
-  --caller-filter <re> only rows where caller matches regex (mangled or demangled)
+  --caller-filter <re> only rows where mangled caller matches regex
 ```
 
 **Example: find all callers of `lock_rec_lock` in one `.o` file**
@@ -163,7 +163,7 @@ _ZL30lock_sec_rec_modify_check...  lock_sec_rec_modify_check_and_lock(...)  lock
 _ZL32lock_clust_rec_modify_check...  lock_clust_rec_modify_check_and_lock(...)  lock0lock.cc  5370  lock_rec_lock(...)  _ZL13lock_rec_lock...
 ```
 
-**Example: find calls using a human-readable regex (matches mangled or demangled)**
+**Example: find calls using a human-readable regex **
 
 ```bash
 $ ./callgraph --no-stl --callee-filter "lock_rec_lock" lock0lock.cc.o

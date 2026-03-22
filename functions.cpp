@@ -9,10 +9,10 @@
 //   --no-dwarf           skip addr2line; emit '-' for file/line (faster)
 //   --no-stl             suppress functions whose source is a system header (/usr, /opt)
 //   --function <str>     only show functions where mangled name == <str> (exact)
-//   --function-filter <re> only show functions where name matches regex (mangled or demangled)
+//   --function-filter <re> only show functions where mangled name matches regex
 //
 // Typical use: find the mangled name of a function you know by source location
-//   functions foo.o | grep "foo.cpp:42"
+//   functions foo.o | grep -P "foo.cpp\t42"
 //   functions foo.o --function-filter "my_function_name"
 
 #include "common.h"
@@ -27,7 +27,7 @@ static void usage(const char* argv0) {
         "  --no-dwarf             skip addr2line; emit '-' for file/line (faster)\n"
         "  --no-stl               suppress functions from system headers (/usr, /opt)\n"
         "  --function <str>       only show functions where mangled name == <str> (exact)\n"
-        "  --function-filter <re> only show functions matching regex (mangled or demangled)\n",
+        "  --function-filter <re> only show functions where mangled name matches regex\n",
         argv0);
 }
 
