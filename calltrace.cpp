@@ -227,6 +227,15 @@ struct SymbolTable {
         std::string name;   // mangled
         int         shndx;
         bool        is_func;
+
+        // STT_FUNC symbols sort before non-func symbols at the same (shndx, value).
+        // This ensures lower_bound finds the func symbol even when a STT_SECTION
+        // symbol for the same section sits at the same offset in the sorted array.
+        bool operator<(const Sym& o) const {
+            if (shndx   != o.shndx)   return shndx   < o.shndx;
+            if (value   != o.value)   return value   < o.value;
+            return is_func > o.is_func; // func=true(1) > non-func=false(0), so func sorts first
+        }
     };
     std::vector<Sym> syms;
 
@@ -245,31 +254,39 @@ struct SymbolTable {
                                   ELF64_ST_TYPE(s.st_info) == STT_FUNC });
             }
         }
-        // Sort by (shndx, value) so we can binary-search for enclosing function
-        std::sort(syms.begin(), syms.end(), [](const Sym& a, const Sym& b) {
-            if (a.shndx != b.shndx) return a.shndx < b.shndx;
-            return a.value < b.value;
-        });
+        std::sort(syms.begin(), syms.end());
     }
 
-    // Find the innermost STT_FUNC symbol that contains (shndx, offset).
+    // Find the STT_FUNC symbol that contains (shndx, offset).
+    //
+    // We use lower_bound with a synthetic non-func key at (shndx, offset).
+    // Because func symbols sort before non-func at the same (shndx, value),
+    // lower_bound lands just after any func at this exact offset, so we step
+    // back one position to find it. If the offset is strictly inside a function
+    // (not at its start), lower_bound lands somewhere after the func's start,
+    // and we walk back to find it.
     const Sym* containing_function(int shndx, uint64_t offset) const {
-        int lo = 0, hi = (int)syms.size() - 1, best = -1;
-        while (lo <= hi) {
-            int mid = (lo + hi) / 2;
-            const Sym& s = syms[mid];
-            if (s.shndx < shndx || (s.shndx == shndx && s.value <= offset)) {
-                if (s.shndx == shndx && s.is_func) best = mid;
-                lo = mid + 1;
-            } else {
-                hi = mid - 1;
+        // Synthetic upper-bound key: non-func at (shndx, offset+1) so that
+        // lower_bound gives us the first symbol strictly greater than any func
+        // at (shndx, offset).
+        Sym key;
+        key.shndx   = shndx;
+        key.value   = offset + 1;
+        key.is_func = true;  // doesn't matter since value is offset+1
+
+        auto it = std::lower_bound(syms.begin(), syms.end(), key);
+
+        // Walk back to find the nearest func in the same section
+        while (it != syms.begin()) {
+            --it;
+            if (it->shndx != shndx) return nullptr; // left the section entirely
+            if (it->is_func) {
+                if (it->size > 0 && offset >= it->value + it->size) return nullptr;
+                return &*it;
             }
+            // Non-func symbol at same offset — keep walking back
         }
-        if (best < 0) return nullptr;
-        const Sym& s = syms[best];
-        // If size is known, verify the offset actually falls within the symbol
-        if (s.size > 0 && offset >= s.value + s.size) return nullptr;
-        return &s;
+        return nullptr;
     }
 };
 
@@ -409,9 +426,12 @@ static void process(const Options& opt) {
                     continue; // data reference, not a function call
 
                 } else {
-                    // Inter-TU call to a named external symbol
+                    // Named symbol — inter-TU if SHN_UNDEF, intra-TU if defined here.
+                    // (With -ffunction-sections, non-static functions defined in this
+                    // .o get their own sections and are referenced by name with WEAK
+                    // binding, not via STT_SECTION relocations.)
                     bool is_external = (esym.st_shndx == SHN_UNDEF);
-                    if (is_external  && opt.no_inter) continue;
+                    if ( is_external && opt.no_inter) continue;
                     if (!is_external && opt.no_intra) continue;
                     callee_mangled = strtab + esym.st_name;
                 }
