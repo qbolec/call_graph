@@ -1,4 +1,3 @@
-// functions.cpp
 // Lists all functions defined in an ELF .o file as TSV:
 //   mangled_name \t source_path \t source_line \t demangled_name
 //
@@ -93,7 +92,6 @@ int main(int argc, char** argv) {
             const Elf64_Sym& s = sym_base[j];
             if (ELF64_ST_TYPE(s.st_info) != STT_FUNC) continue;
             if (s.st_shndx == SHN_UNDEF) continue;
-            // Skip STL sections early when --no-stl, same as calltrace does
             if (no_stl && is_stl_section(obj.section_name(s.st_shndx))) continue;
             std::string name = strtab + s.st_name;
             if (name.empty()) continue;

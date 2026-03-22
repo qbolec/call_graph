@@ -9,7 +9,7 @@
 #   --db=<path>   path to the SQLite database to create (default: call_graph.db)
 #   --no-dwarf    skip source location lookup (faster but no path/line columns)
 #
-# The calltrace binary is looked for in:
+# The callgraph binary is looked for in:
 #   1. Same directory as this script
 #   2. PATH
 
@@ -38,18 +38,18 @@ if [[ ! -d "$BUILD_DIR" ]]; then
     exit 1
 fi
 
-# Locate calltrace
+# Locate callgraph
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [[ -x "$SCRIPT_DIR/calltrace" ]]; then
-    CALLTRACE="$SCRIPT_DIR/calltrace"
-elif command -v calltrace &>/dev/null; then
-    CALLTRACE="$(command -v calltrace)"
+if [[ -x "$SCRIPT_DIR/callgraph" ]]; then
+    CALLGRAPH="$SCRIPT_DIR/callgraph"
+elif command -v callgraph &>/dev/null; then
+    CALLGRAPH="$(command -v callgraph)"
 else
-    echo "error: calltrace not found next to this script or on PATH" >&2
+    echo "error: callgraph not found next to this script or on PATH" >&2
     exit 1
 fi
 
-echo "Using calltrace: $CALLTRACE" >&2
+echo "Using callgraph: $CALLGRAPH" >&2
 echo "Build dir:       $BUILD_DIR" >&2
 echo "Database:        $DB" >&2
 
@@ -69,7 +69,7 @@ echo "Extracting call edges (${NPROC} parallel workers)..." >&2
 find "$BUILD_DIR" -name '*.o' -print0 \
     | xargs -0 -P"$NPROC" -I{} --process-slot-var=SLOT \
         sh -c '"$1" --no-stl $4 "$2" >> "$3/slot_$SLOT.tsv" 2>/dev/null' \
-        _ "$CALLTRACE" {} "$SLOT_DIR" "$NO_DWARF"
+        _ "$CALLGRAPH" {} "$SLOT_DIR" "$NO_DWARF"
 
 TSV="$SLOT_DIR/all.tsv"
 cat "$SLOT_DIR"/slot_*.tsv > "$TSV"

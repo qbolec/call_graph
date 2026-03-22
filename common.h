@@ -1,4 +1,4 @@
-// common.h — shared ELF/DWARF utilities for calltrace and functions
+// shared ELF/DWARF utilities for callgraph and functions
 //
 // Requires linking with nothing beyond libc and libstdc++.
 // addr2line (binutils) must be on PATH for DWARF lookups.

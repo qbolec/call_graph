@@ -1,9 +1,8 @@
-// calltrace.cpp
 // Extracts (caller, source_path, source_line, callee) tuples from an ELF .o file.
 //
 // Build:  see CMakeLists.txt
 //
-// Usage:  calltrace [options] <file.o>
+// Usage:  callgraph [options] <file.o>
 //
 // Options:
 //   --no-intra           suppress intra-TU calls (needs -ffunction-sections)
