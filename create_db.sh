@@ -3,7 +3,11 @@
 # and import them into a SQLite database.
 #
 # Usage:
-#   create_db.sh [--db=call_graph.db] <build_dir>
+#   create_db.sh [--db=call_graph.db] [--no-dwarf] <build_dir>
+#
+# Options:
+#   --db=<path>   path to the SQLite database to create (default: call_graph.db)
+#   --no-dwarf    skip source location lookup (faster but no path/line columns)
 #
 # The calltrace binary is looked for in:
 #   1. Same directory as this script
@@ -12,18 +16,20 @@
 set -euo pipefail
 
 DB="call_graph.db"
+NO_DWARF=""
 BUILD_DIR=""
 
 for arg in "$@"; do
     case "$arg" in
-        --db=*)  DB="${arg#--db=}" ;;
-        -*)      echo "unknown option: $arg" >&2; exit 1 ;;
-        *)       BUILD_DIR="$arg" ;;
+        --db=*)      DB="${arg#--db=}" ;;
+        --no-dwarf)  NO_DWARF="--no-dwarf" ;;
+        -*)          echo "unknown option: $arg" >&2; exit 1 ;;
+        *)           BUILD_DIR="$arg" ;;
     esac
 done
 
 if [[ -z "$BUILD_DIR" ]]; then
-    echo "Usage: $0 [--db=call_graph.db] <build_dir>" >&2
+    echo "Usage: $0 [--db=call_graph.db] [--no-dwarf] <build_dir>" >&2
     exit 1
 fi
 
@@ -62,11 +68,11 @@ echo "Extracting call edges (${NPROC} parallel workers)..." >&2
 # loop processes them all, always appending to the same slot file.
 find "$BUILD_DIR" -name '*.o' -print0 \
     | xargs -0 -P"$NPROC" -I{} --process-slot-var=SLOT \
-        sh -c '"$1" --no-stl --no-dwarf "$2" >> "$3/slot_$SLOT.tsv" 2>/dev/null || true' \
-        _ "$CALLTRACE" {} "$SLOT_DIR"
+        sh -c '"$1" --no-stl $4 "$2" >> "$3/slot_$SLOT.tsv" 2>/dev/null' \
+        _ "$CALLTRACE" {} "$SLOT_DIR" "$NO_DWARF"
 
 TSV="$SLOT_DIR/all.tsv"
-cat "$SLOT_DIR"/slot_*.tsv 2>/dev/null > "$TSV" || true
+cat "$SLOT_DIR"/slot_*.tsv > "$TSV"
 
 ROWS=$(wc -l < "$TSV")
 echo "Extracted $ROWS edges" >&2

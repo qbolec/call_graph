@@ -61,7 +61,7 @@ trap 'rm -rf "$SLOT_DIR"' EXIT
 # Each worker appends only to its own slot file — no interleaving possible.
 find "$BUILD_DIR" -name '*.o' -print0 \
     | xargs -0 -P"$NPROC" -I{} --process-slot-var=SLOT \
-        sh -c '"$1" --no-stl --function-filter "$2" "$3" >> "$4/slot_$SLOT.tsv" 2>/dev/null || true' \
+        sh -c '"$1" --no-stl --function-filter "$2" "$3" >> "$4/slot_$SLOT.tsv" 2>/dev/null' \
         _ "$FUNCTIONS" "$PATTERN" {} "$SLOT_DIR"
 
 cat "$SLOT_DIR"/slot_*.tsv 2>/dev/null \
